@@ -1,0 +1,55 @@
+stages:
+  - validate
+  - deploy
+
+variables:
+  TF_ROOT: ${CI_PROJECT_DIR}
+  TF_STATE_NAME: default
+
+# Cache Terraform plugins between jobs
+cache:
+  paths:
+    - ${TF_ROOT}/.terraform
+
+# Validate Terraform configuration
+terraform-validate:
+  stage: validate
+  image:
+    name: hashicorp/terraform:light
+    entrypoint:
+      - '/usr/bin/env'
+      - 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+  before_script:
+    - cd ${TF_ROOT}
+    - terraform --version
+    - terraform init -backend=false
+  script:
+    - terraform validate
+    - terraform fmt -check
+  only:
+    - merge_requests
+    - main
+
+# Deploy to AWS
+deploy:
+  stage: deploy
+  image:
+    name: hashicorp/terraform:light
+    entrypoint:
+      - '/usr/bin/env'
+      - 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+  before_script:
+    - cd ${TF_ROOT}
+    - terraform --version
+    - terraform init
+  script:
+    - terraform plan -out=tfplan
+    - terraform apply -auto-approve tfplan
+    - echo "S3 Website Endpoint:" $(terraform output -raw s3_website_endpoint)
+    - echo "CloudFront URL:" $(terraform output -raw cloudfront_url)
+  only:
+    - main
+  when: manual
+  environment:
+    name: production
+    url: https://$CLOUDFRONT_DOMAIN
