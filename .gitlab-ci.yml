@@ -1,55 +1,56 @@
-stages:
-  - validate
-  - deploy
+image: registry.gitlab.com/gitlab-org/terraform-images/stable:latest
 
 variables:
-  TF_ROOT: ${CI_PROJECT_DIR}
-  TF_STATE_NAME: default
+  TF_ROOT: ${CI_PROJECT_DIR}/terraform
+  TF_STATE_NAME: production
+  TF_VAR_bucket_name: "resume-site-${CI_PROJECT_ID}-bucket"
 
-# Cache Terraform plugins between jobs
 cache:
+  key: "${TF_STATE_NAME}"
   paths:
     - ${TF_ROOT}/.terraform
 
-# Validate Terraform configuration
-terraform-validate:
-  stage: validate
-  image:
-    name: hashicorp/terraform:light
-    entrypoint:
-      - '/usr/bin/env'
-      - 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
-  before_script:
-    - cd ${TF_ROOT}
-    - terraform --version
-    - terraform init -backend=false
-  script:
-    - terraform validate
-    - terraform fmt -check
-  only:
-    - merge_requests
-    - main
+before_script:
+  - cd ${TF_ROOT}
 
-# Deploy to AWS
-deploy:
-  stage: deploy
-  image:
-    name: hashicorp/terraform:light
-    entrypoint:
-      - '/usr/bin/env'
-      - 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
-  before_script:
-    - cd ${TF_ROOT}
-    - terraform --version
-    - terraform init
+stages:
+  - validate
+  - plan
+  - deploy
+  - cleanup
+
+validate:
+  stage: validate
   script:
-    - terraform plan -out=tfplan
-    - terraform apply -auto-approve tfplan
-    - echo "S3 Website Endpoint:" $(terraform output -raw s3_website_endpoint)
-    - echo "CloudFront URL:" $(terraform output -raw cloudfront_url)
-  only:
-    - main
-  when: manual
+    - gitlab-terraform validate
+
+plan:
+  stage: plan
+  script:
+    - gitlab-terraform plan
+    - gitlab-terraform plan-json
+  artifacts:
+    name: plan
+    paths:
+      - ${TF_ROOT}/plan.cache
+    reports:
+      terraform: ${TF_ROOT}/plan.json
+
+apply:
+  stage: deploy
+  script:
+    - gitlab-terraform apply
+    - apk add --no-cache aws-cli
+    - aws s3 sync ${CI_PROJECT_DIR} s3://$(gitlab-terraform output -raw s3_bucket_name) --exclude "terraform/*" --exclude ".git/*" --exclude ".gitlab-ci.yml"
   environment:
     name: production
-    url: https://$CLOUDFRONT_DOMAIN
+  when: manual
+
+cleanup:
+  stage: cleanup
+  script:
+    - gitlab-terraform destroy
+  environment:
+    name: production
+    action: stop
+  when: manual
